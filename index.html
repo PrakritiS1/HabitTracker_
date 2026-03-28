@@ -1005,6 +1005,52 @@
             .action-buttons { grid-template-columns: 1fr; }
             .tracker-header-top { flex-direction: column; gap: 15px; }
         }
+        /* ==================== MODAL STYLES ==================== */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal-card {
+            background: var(--dark-surface);
+            border: 1.5px solid rgba(0, 212, 255, 0.25);
+            border-radius: 16px;
+            padding: 36px;
+            width: 100%;
+            max-width: 420px;
+            animation: fadeInView 0.25s ease-out;
+        }
+        .modal-card h3 {
+            font-family: 'Sora', sans-serif;
+            font-size: 1.3em;
+            margin-bottom: 20px;
+            color: var(--primary);
+        }
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            margin-top: 24px;
+            justify-content: flex-end;
+        }
+        .modal-actions button {
+            padding: 10px 20px;
+            border-radius: 10px;
+            border: none;
+            font-family: 'Outfit', sans-serif;
+            font-size: 0.95em;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .modal-actions button:hover { opacity: 0.85; }
+        .modal-cancel-btn { background: var(--dark-surface-light); color: var(--text-primary); }
+        .modal-submit-btn { background: var(--primary); color: #000; font-weight: 600; }
+
     </style>
 </head>
 <body>
@@ -1195,25 +1241,80 @@
 
             <!-- Footer -->
             <div class="footer">
-                ✨ All data is automatically saved and protected in your browser
+                ✨ All data is securely saved on the server
             </div>
         </div>
     </div>
 
+    <!-- ==================== CHANGE PASSWORD MODAL ==================== -->
+    <div id="changePasswordModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="changePwdTitle">
+        <div class="modal-card">
+            <h3 id="changePwdTitle">🔄 Change Password</h3>
+            <form id="changePwdForm" onsubmit="submitChangePassword(event)">
+                <div class="form-group">
+                    <label for="modalCurrentPwd">Current Password</label>
+                    <input type="password" id="modalCurrentPwd" placeholder="••••••••" required>
+                    <div class="form-error" id="modalPwdError"></div>
+                </div>
+                <div class="form-group">
+                    <label for="modalNewPwd">New Password</label>
+                    <input type="password" id="modalNewPwd" placeholder="Min. 8 characters" required>
+                </div>
+                <div class="form-group">
+                    <label for="modalConfirmPwd">Confirm New Password</label>
+                    <input type="password" id="modalConfirmPwd" placeholder="••••••••" required>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="modal-cancel-btn" onclick="closeChangePasswordModal()">Cancel</button>
+                    <button type="submit" class="modal-submit-btn">Update Password</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
+        // ==================== BACKEND CONFIG ====================
+        const API_URL = '/api';
+
         // ==================== SHARED STATE ====================
-        const usersDB = JSON.parse(localStorage.getItem('habitTrackerUsers')) || {};
         const currentYear = new Date().getFullYear();
         const habits = {};
-        let progressChart = null;
-        let completionChart = null;
+
+        // ==================== TOKEN HELPERS ====================
+        function getToken() {
+            return localStorage.getItem('habitToken');
+        }
+
+        function setToken(token) {
+            localStorage.setItem('habitToken', token);
+        }
+
+        function clearToken() {
+            localStorage.removeItem('habitToken');
+        }
+
+        async function apiFetch(path, options = {}) {
+            const token = getToken();
+            const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+            if (token) headers['Authorization'] = 'Bearer ' + token;
+            const res = await fetch(API_URL + path, { ...options, headers });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Request failed');
+            return data;
+        }
 
         // ==================== INITIALIZATION ====================
-        window.addEventListener('DOMContentLoaded', () => {
-            const session = JSON.parse(localStorage.getItem('habitTrackerSession'));
-            if (session && usersDB[session.email]) {
-                loadHabitData(session.email);
-                showDashboard();
+        window.addEventListener('DOMContentLoaded', async () => {
+            const token = getToken();
+            if (token) {
+                try {
+                    const user = await apiFetch('/auth/me');
+                    await loadHabitData();
+                    populateDashboard(user);
+                    switchView('dashboardView');
+                } catch {
+                    clearToken();
+                }
             }
         });
 
@@ -1226,7 +1327,7 @@
             window.scrollTo(0, 0);
         }
 
-        function handleLogin(event) {
+        async function handleLogin(event) {
             event.preventDefault();
             const email = document.getElementById('loginEmail').value.trim();
             const password = document.getElementById('loginPassword').value;
@@ -1236,30 +1337,29 @@
                 return;
             }
 
-            if (!usersDB[email]) {
-                showError('loginEmailError', 'Email not found');
-                return;
+            try {
+                const data = await apiFetch('/auth/login', {
+                    method: 'POST',
+                    body: JSON.stringify({ email, password })
+                });
+                setToken(data.token);
+                showSuccess('loginSuccess', 'Login successful!');
+                setTimeout(async () => {
+                    await loadHabitData();
+                    populateDashboard(data.user);
+                    switchView('dashboardView');
+                }, 1200);
+            } catch (err) {
+                const msg = err.message || '';
+                if (msg.toLowerCase().includes('email')) {
+                    showError('loginEmailError', msg);
+                } else {
+                    showError('loginPasswordError', msg);
+                }
             }
-
-            if (usersDB[email].password !== hashPassword(password)) {
-                showError('loginPasswordError', 'Incorrect password');
-                return;
-            }
-
-            showSuccess('loginSuccess', 'Login successful!');
-            setTimeout(() => {
-                const session = {
-                    email: email,
-                    name: usersDB[email].name,
-                    loginTime: new Date().toISOString()
-                };
-                localStorage.setItem('habitTrackerSession', JSON.stringify(session));
-                loadHabitData(email);
-                showDashboard();
-            }, 1500);
         }
 
-        function handleSignup(event) {
+        async function handleSignup(event) {
             event.preventDefault();
             const name = document.getElementById('signupName').value.trim();
             const email = document.getElementById('signupEmail').value.trim();
@@ -1270,89 +1370,80 @@
                 showError('signupNameError', 'Please fill all fields');
                 return;
             }
-
             if (name.length < 3) {
                 showError('signupNameError', 'Name must be at least 3 characters');
                 return;
             }
-
             if (password.length < 8) {
                 showError('signupPasswordError', 'Password must be at least 8 characters');
                 return;
             }
-
             if (password !== confirm) {
                 showError('signupConfirmError', 'Passwords do not match');
                 return;
             }
 
-            if (usersDB[email]) {
-                showError('signupEmailError', 'Email already registered');
-                return;
+            try {
+                const data = await apiFetch('/auth/register', {
+                    method: 'POST',
+                    body: JSON.stringify({ name, email, password })
+                });
+                setToken(data.token);
+                showSuccess('signupSuccess', 'Account created successfully!');
+                setTimeout(async () => {
+                    await loadHabitData();
+                    populateDashboard(data.user);
+                    switchView('dashboardView');
+                }, 1200);
+            } catch (err) {
+                const msg = err.message || '';
+                if (msg.toLowerCase().includes('email')) {
+                    showError('signupEmailError', msg);
+                } else if (msg.toLowerCase().includes('name')) {
+                    showError('signupNameError', msg);
+                } else {
+                    showError('signupPasswordError', msg);
+                }
             }
-
-            usersDB[email] = {
-                name: name,
-                email: email,
-                password: hashPassword(password),
-                createdAt: new Date().toISOString()
-            };
-
-            localStorage.setItem('habitTrackerUsers', JSON.stringify(usersDB));
-
-            showSuccess('signupSuccess', 'Account created successfully!');
-            setTimeout(() => {
-                const session = {
-                    email: email,
-                    name: name,
-                    loginTime: new Date().toISOString()
-                };
-                localStorage.setItem('habitTrackerSession', JSON.stringify(session));
-                loadHabitData(email);
-                showDashboard();
-            }, 1500);
         }
 
         function handleForgot(event) {
             event.preventDefault();
             const email = document.getElementById('forgotEmail').value.trim();
-
             if (!email) {
                 showError('forgotEmailError', 'Please enter your email');
                 return;
             }
-
-            if (!usersDB[email]) {
-                showError('forgotEmailError', 'Email not found');
-                return;
-            }
-
-            showSuccess('forgotSuccess', 'Password reset email sent!');
+            showSuccess('forgotSuccess', 'If this email is registered, a reset link will be sent.');
             setTimeout(() => {
                 switchView('loginView');
                 document.getElementById('forgotForm').reset();
             }, 2000);
         }
 
-        function showDashboard() {
-            const session = JSON.parse(localStorage.getItem('habitTrackerSession'));
-            const user = usersDB[session.email];
-
+        function populateDashboard(user) {
             document.getElementById('dashboardName').textContent = user.name;
             document.getElementById('dashboardEmail').textContent = user.email;
             document.getElementById('dashboardDate').textContent = new Date(user.createdAt).toLocaleDateString();
             document.getElementById('userDisplayName').textContent = user.name;
+        }
 
-            switchView('dashboardView');
+        async function showDashboard() {
+            try {
+                const user = await apiFetch('/auth/me');
+                populateDashboard(user);
+                switchView('dashboardView');
+            } catch {
+                clearToken();
+                switchView('loginView');
+            }
         }
 
         function handleLogout() {
             if (confirm('Are you sure you want to logout?')) {
-                const session = JSON.parse(localStorage.getItem('habitTrackerSession'));
-                if (session) {
-                    saveHabitData(session.email);
-                }
-                localStorage.removeItem('habitTrackerSession');
+                clearToken();
+                // Clear in-memory habits
+                for (const k in habits) delete habits[k];
                 document.getElementById('loginForm').reset();
                 document.getElementById('signupForm').reset();
                 switchView('loginView');
@@ -1360,70 +1451,98 @@
         }
 
         function handleLogoutFromTracker() {
-            const session = JSON.parse(localStorage.getItem('habitTrackerSession'));
-            if (session) {
-                saveHabitData(session.email);
-                showDashboard();
-            }
+            showDashboard();
         }
 
-        function handleChangePassword() {
-            const newPassword = prompt('Enter new password (min 8 characters):');
-            if (!newPassword) return;
+        async function handleChangePassword() {
+            document.getElementById('changePwdForm').reset();
+            document.getElementById('modalPwdError').textContent = '';
+            document.getElementById('changePwdForm').reset();
+            document.getElementById('changePasswordModal').classList.add('active');
+        }
+
+        function closeChangePasswordModal() {
+            document.getElementById('changePasswordModal').classList.remove('active');
+        }
+
+        async function submitChangePassword(event) {
+            event.preventDefault();
+            const currentPassword = document.getElementById('modalCurrentPwd').value;
+            const newPassword = document.getElementById('modalNewPwd').value;
+            const confirmPwd = document.getElementById('modalConfirmPwd').value;
+            const errorEl = document.getElementById('modalPwdError');
+            errorEl.textContent = '';
 
             if (newPassword.length < 8) {
-                alert('Password must be at least 8 characters');
+                errorEl.textContent = 'New password must be at least 8 characters';
+                errorEl.classList.add('show');
+                return;
+            }
+            if (newPassword !== confirmPwd) {
+                errorEl.textContent = 'New passwords do not match';
+                errorEl.classList.add('show');
                 return;
             }
 
-            const session = JSON.parse(localStorage.getItem('habitTrackerSession'));
-            usersDB[session.email].password = hashPassword(newPassword);
-            localStorage.setItem('habitTrackerUsers', JSON.stringify(usersDB));
-            alert('Password changed successfully!');
-        }
-
-        function handleEditProfile() {
-            const session = JSON.parse(localStorage.getItem('habitTrackerSession'));
-            const newName = prompt('Enter new name:', usersDB[session.email].name);
-            
-            if (newName && newName.trim().length >= 3) {
-                usersDB[session.email].name = newName.trim();
-                session.name = newName.trim();
-                localStorage.setItem('habitTrackerUsers', JSON.stringify(usersDB));
-                localStorage.setItem('habitTrackerSession', JSON.stringify(session));
-                document.getElementById('dashboardName').textContent = newName.trim();
-                document.getElementById('userDisplayName').textContent = newName.trim();
-                alert('Profile updated successfully!');
+            try {
+                await apiFetch('/auth/password', {
+                    method: 'PUT',
+                    body: JSON.stringify({ currentPassword, newPassword })
+                });
+                closeChangePasswordModal();
+                alert('Password changed successfully!');
+            } catch (err) {
+                errorEl.textContent = err.message || 'Failed to change password';
+                errorEl.classList.add('show');
             }
         }
 
-        function handleDeleteAccount() {
+        async function handleEditProfile() {
+            let currentName = document.getElementById('dashboardName').textContent;
+            const newName = prompt('Enter new name:', currentName);
+            if (!newName || newName.trim().length < 3) return;
+
+            try {
+                const data = await apiFetch('/auth/profile', {
+                    method: 'PUT',
+                    body: JSON.stringify({ name: newName.trim() })
+                });
+                document.getElementById('dashboardName').textContent = data.name;
+                document.getElementById('userDisplayName').textContent = data.name;
+                alert('Profile updated successfully!');
+            } catch (err) {
+                alert(err.message || 'Failed to update profile');
+            }
+        }
+
+        async function handleDeleteAccount() {
             if (confirm('Are you sure? This action cannot be undone.')) {
                 if (confirm('This will permanently delete your account and all data. Continue?')) {
-                    const session = JSON.parse(localStorage.getItem('habitTrackerSession'));
-                    saveHabitData(session.email);
-                    delete usersDB[session.email];
-                    localStorage.setItem('habitTrackerUsers', JSON.stringify(usersDB));
-                    localStorage.removeItem('habitTrackerSession');
-                    alert('Account deleted successfully');
-                    switchView('loginView');
+                    try {
+                        await apiFetch('/auth/account', { method: 'DELETE' });
+                        clearToken();
+                        for (const k in habits) delete habits[k];
+                        alert('Account deleted successfully');
+                        switchView('loginView');
+                    } catch (err) {
+                        alert(err.message || 'Failed to delete account');
+                    }
                 }
             }
         }
 
         // ==================== HABIT TRACKER FUNCTIONS ====================
-        function loadHabitData(email) {
-            const userHabits = localStorage.getItem(`habits_${email}`);
-            if (userHabits) {
-                Object.assign(habits, JSON.parse(userHabits));
+        async function loadHabitData() {
+            for (const k in habits) delete habits[k];
+            try {
+                const data = await apiFetch('/habits');
+                Object.assign(habits, data);
+            } catch {
+                // leave habits empty if API fails
             }
         }
 
-        function saveHabitData(email) {
-            localStorage.setItem(`habits_${email}`, JSON.stringify(habits));
-        }
-
-        function addHabit() {
+        async function addHabit() {
             const input = document.getElementById('habitName');
             const habitName = input.value.trim();
 
@@ -1432,70 +1551,88 @@
                 return;
             }
 
-            if (habits[habitName]) {
-                alert('This habit already exists');
-                return;
+            try {
+                const data = await apiFetch('/habits', {
+                    method: 'POST',
+                    body: JSON.stringify({ name: habitName })
+                });
+                habits[data.name] = data.completedDays;
+                input.value = '';
+                renderAll();
+            } catch (err) {
+                alert(err.message || 'Failed to add habit');
             }
-
-            habits[habitName] = {};
-            input.value = '';
-            saveAndRender();
         }
 
-        function toggleDay(habitName, dayKey) {
-            if (!habits[habitName]) return;
+        async function toggleDay(habitName, dayKey) {
+            if (!habits.hasOwnProperty(habitName)) return;
 
-            if (habits[habitName][dayKey]) {
-                delete habits[habitName][dayKey];
-            } else {
-                habits[habitName][dayKey] = true;
+            try {
+                const data = await apiFetch('/habits/' + encodeURIComponent(habitName) + '/toggle', {
+                    method: 'PUT',
+                    body: JSON.stringify({ dayKey })
+                });
+                habits[habitName] = data.completedDays;
+                renderAll();
+            } catch (err) {
+                alert(err.message || 'Failed to update day');
             }
-            saveAndRender();
         }
 
-        function deleteHabit(habitName) {
+        async function deleteHabit(habitName) {
             if (confirm(`Are you sure you want to delete "${habitName}"?`)) {
-                delete habits[habitName];
-                saveAndRender();
+                try {
+                    await apiFetch('/habits/' + encodeURIComponent(habitName), { method: 'DELETE' });
+                    delete habits[habitName];
+                    renderAll();
+                } catch (err) {
+                    alert(err.message || 'Failed to delete habit');
+                }
             }
         }
 
-        function resetHabit(habitName) {
+        async function resetHabit(habitName) {
             if (confirm(`Reset all progress for "${habitName}"?`)) {
-                habits[habitName] = {};
-                saveAndRender();
+                try {
+                    await apiFetch('/habits/' + encodeURIComponent(habitName) + '/reset', { method: 'POST' });
+                    habits[habitName] = {};
+                    renderAll();
+                } catch (err) {
+                    alert(err.message || 'Failed to reset habit');
+                }
             }
-        }
-
-        function saveAndRender() {
-            const session = JSON.parse(localStorage.getItem('habitTrackerSession'));
-            if (session) {
-                saveHabitData(session.email);
-            }
-            renderAll();
         }
 
         // ==================== RENDER FUNCTIONS ====================
+        function escapeHTML(str) {
+            return str.replace(/&/g, '&amp;')
+                      .replace(/</g, '&lt;')
+                      .replace(/>/g, '&gt;')
+                      .replace(/"/g, '&quot;')
+                      .replace(/'/g, '&#39;');
+        }
+
         function getDaysInMonth(year, month) {
             return new Date(year, month + 1, 0).getDate();
         }
 
         function getMonthName(month) {
-            const months = ['January', 'February', 'March', 'April', 'May', 'June', 
-                          'July', 'August', 'September', 'October', 'November', 'December'];
+            const months = ['January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'];
             return months[month];
         }
 
         function createHabitCard(habitName, completedDays) {
             const completed = Object.keys(completedDays).length;
             const percentage = Math.round((completed / 365) * 100);
+            const safeHabit = JSON.stringify(habitName); // properly quoted JS string for onclick
 
             let yearGridHtml = '<div class="year-grid-container"><div class="year-grid">';
 
             for (let month = 0; month < 12; month++) {
                 const monthName = getMonthName(month);
                 const daysInMonth = getDaysInMonth(currentYear, month);
-                
+
                 yearGridHtml += `<div class="month-column">
                     <div class="month-header">${monthName.substring(0, 3)}</div>
                     <div class="days-grid">`;
@@ -1503,10 +1640,10 @@
                 for (let day = 1; day <= daysInMonth; day++) {
                     const dayKey = day + '-' + (month + 1);
                     const isCompleted = completedDays[dayKey] ? 'completed' : '';
-                    
-                    yearGridHtml += `<div class="day-cell ${isCompleted}" 
-                        onclick="toggleDay('${habitName}', '${dayKey}')"
-                        title="${monthName} ${day}"></div>`;
+
+                    yearGridHtml += `<div class="day-cell ${isCompleted}"
+                        onclick="toggleDay(${safeHabit}, '${dayKey}')"
+                        title="${escapeHTML(monthName)} ${day}"></div>`;
                 }
 
                 yearGridHtml += `</div></div>`;
@@ -1517,10 +1654,10 @@
             return `
                 <div class="habit-card">
                     <div class="habit-header">
-                        <div class="habit-name">${habitName}</div>
+                        <div class="habit-name">${escapeHTML(habitName)}</div>
                         <div class="habit-actions">
-                            <button class="action-btn-habit reset-btn" onclick="resetHabit('${habitName}')">Reset</button>
-                            <button class="action-btn-habit delete-btn" onclick="deleteHabit('${habitName}')">Delete</button>
+                            <button class="action-btn-habit reset-btn" onclick="resetHabit(${safeHabit})">Reset</button>
+                            <button class="action-btn-habit delete-btn" onclick="deleteHabit(${safeHabit})">Delete</button>
                         </div>
                     </div>
 
@@ -1556,7 +1693,7 @@
 
         function updateStats() {
             const statsGrid = document.getElementById('statsGrid');
-            let totalHabits = Object.keys(habits).length;
+            const totalHabits = Object.keys(habits).length;
             let totalCompleted = 0;
             let todayCompleted = 0;
 
@@ -1654,18 +1791,6 @@
 
             strengthBar.style.width = Math.min(strength, 100) + '%';
         }
-
-        function hashPassword(password) {
-            return btoa(password);
-        }
-
-        // Auto-save on page unload
-        window.addEventListener('beforeunload', () => {
-            const session = JSON.parse(localStorage.getItem('habitTrackerSession'));
-            if (session) {
-                saveHabitData(session.email);
-            }
-        });
     </script>
 </body>
 </html>
